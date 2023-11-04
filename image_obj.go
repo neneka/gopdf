@@ -158,26 +158,25 @@ func (i *ImageObj) GetRect() *Rect {
 func (i *ImageObj) getRect() (*Rect, error) {
 
 	i.rawImgReader.Seek(0, 0)
-	m, _, err := image.Decode(i.rawImgReader)
+	m, _, err := image.DecodeConfig(i.rawImgReader)
 	if err != nil {
 		return nil, err
 	}
 
-	imageRect := m.Bounds()
 	k := 1
 	w := -128 //init
 	h := -128 //init
 	if w < 0 {
-		w = -imageRect.Dx() * 72 / w / k
+		w = -m.Width * 72 / w / k
 	}
 	if h < 0 {
-		h = -imageRect.Dy() * 72 / h / k
+		h = -m.Height * 72 / h / k
 	}
 	if w == 0 {
-		w = h * imageRect.Dx() / imageRect.Dy()
+		w = h * m.Width / m.Height
 	}
 	if h == 0 {
-		h = w * imageRect.Dy() / imageRect.Dx()
+		h = w * m.Height / m.Width
 	}
 
 	var rect = new(Rect)
