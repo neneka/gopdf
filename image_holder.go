@@ -11,6 +11,7 @@ import (
 // ImageHolder hold image data
 type ImageHolder interface {
 	ID() string
+	Reset()
 	io.Reader
 }
 
@@ -78,4 +79,8 @@ func newImageBuffByReader(r io.Reader) (*imageBuff, error) {
 
 func (i *imageBuff) ID() string {
 	return i.id
+}
+
+func (i *imageBuff) Reset() {
+	i.Buffer.Reset()
 }
