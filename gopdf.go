@@ -22,12 +22,18 @@ import (
 
 const subsetFont = "SubsetFont"
 
+const colorSpace = "ColorSpace"
+
 // the default margin if no margins are set
 const defaultMargin = 10.0 //for backward compatible
 
 var ErrEmptyString = errors.New("empty string")
 
 var ErrMissingFontFamily = errors.New("font family not found")
+
+var ErrMissingColorSpace = errors.New("color space not found")
+
+var ErrExistsColorSpace = errors.New("color space already exists")
 
 var ErrUndefinedCacheContentImage = errors.New("cacheContentImage is undefined")
 
@@ -1294,8 +1300,17 @@ func (gp *GoPdf) MultiCellWithOption(rectangle *Rect, text string, opt CellOptio
 		return err
 	}
 
+	startHeight := rectangle.H
+	if l := len(textSplits); l > 1 {
+		shiftLines := l / 2
+		if l%2 != 0 {
+			shiftLines += 1
+		}
+		startHeight = rectangle.H - (lineHeight+1.5)*float64(shiftLines)
+	}
+
 	for _, text := range textSplits {
-		gp.CellWithOption(&Rect{W: rectangle.W, H: lineHeight}, string(text), opt)
+		gp.CellWithOption(&Rect{W: rectangle.W, H: startHeight}, string(text), opt)
 		gp.Br(lineHeight)
 		gp.SetX(x)
 	}
@@ -1566,6 +1581,20 @@ func (gp *GoPdf) ImportPageStream(sourceStream *io.ReadSeeker, pageno int, box s
 	return tpl
 }
 
+// GetStreamPageSizes gets the sizes of the pages using a stream
+// Returns a map of available pages and its box sizes starting with the first page at index 1 containing a map of boxes containing a map of size values
+func (gp *GoPdf) GetStreamPageSizes(sourceStream *io.ReadSeeker) map[int]map[string]map[string]float64 {
+	gp.fpdi.SetSourceStream(sourceStream)
+	return gp.fpdi.GetPageSizes()
+}
+
+// GetPageSizes gets the sizes of the pages of a pdf file1
+// Returns a map of available pages and its box sizes starting with the first page at index 1 containing a map of boxes containing a map of size values
+func (gp *GoPdf) GetPageSizes(sourceFile string) map[int]map[string]map[string]float64 {
+	gp.fpdi.SetSourceFile(sourceFile)
+	return gp.fpdi.GetPageSizes()
+}
+
 // UseImportedTemplate draws an imported PDF page.
 func (gp *GoPdf) UseImportedTemplate(tplid int, x float64, y float64, w float64, h float64) {
 	gp.UnitsToPointsVar(&x, &y, &w, &h)
@@ -1673,15 +1702,25 @@ func (gp *GoPdf) ImportTemplates(tpls map[string]int) {
 // AddExternalLink adds a new external link.
 func (gp *GoPdf) AddExternalLink(url string, x, y, w, h float64) {
 	gp.UnitsToPointsVar(&x, &y, &w, &h)
-	page := gp.pdfObjs[gp.curr.IndexOfPageObj].(*PageObj)
-	page.Links = append(page.Links, linkOption{x, gp.config.PageSize.H - y, w, h, url, ""})
+
+	linkOpt := linkOption{x, gp.config.PageSize.H - y, w, h, url, ""}
+	gp.addLink(linkOpt)
 }
 
 // AddInternalLink adds a new internal link.
 func (gp *GoPdf) AddInternalLink(anchor string, x, y, w, h float64) {
 	gp.UnitsToPointsVar(&x, &y, &w, &h)
+
+	linkOpt := linkOption{x, gp.config.PageSize.H - y, w, h, "", anchor}
+	gp.addLink(linkOpt)
+}
+
+func (gp *GoPdf) addLink(option linkOption) {
 	page := gp.pdfObjs[gp.curr.IndexOfPageObj].(*PageObj)
-	page.Links = append(page.Links, linkOption{x, gp.config.PageSize.H - y, w, h, "", anchor})
+	linkObj := gp.addObj(annotObj{option, func() *GoPdf {
+		return gp
+	}})
+	page.LinkObjIds = append(page.LinkObjIds, linkObj+1)
 }
 
 // SetAnchor creates a new anchor.
@@ -2274,7 +2313,7 @@ func (gp *GoPdf) writeInfo(w io.Writer) {
 	}
 
 	if !zerotime.Equal(gp.info.CreationDate) {
-		fmt.Fprintf(w, "/CreationDate(D:%s)>>\n", infodate(gp.info.CreationDate))
+		fmt.Fprintf(w, "/CreationDate(D:%s)\n", infodate(gp.info.CreationDate))
 	}
 
 	io.WriteString(w, " >>\n")
@@ -2426,6 +2465,71 @@ func (gp *GoPdf) SetPage(pageno int) error {
 	}
 
 	return errors.New("invalid page number")
+}
+
+func (gp *GoPdf) SetColorSpace(name string) error {
+	found := false
+	i := 0
+	max := len(gp.pdfObjs)
+	for i < max {
+		if gp.pdfObjs[i].getType() == colorSpace {
+			obj := gp.pdfObjs[i]
+			sub, ok := obj.(*ColorSpaceObj)
+			if ok {
+				if sub.Name == name {
+					gp.curr.IndexOfColorSpaceObj = i
+					gp.getContent().appendColorSpace(sub.CountOfSpaceColor)
+					found = true
+					break
+				}
+			}
+		}
+		i++
+	}
+
+	if !found {
+		return ErrMissingColorSpace
+	}
+
+	return nil
+}
+
+func (gp *GoPdf) AddColorSpaceRGB(name string, r, g, b uint8) error {
+	colorSpace := ColorSpaceObj{}
+	colorSpace.Name = name
+
+	colorSpace.SetColorRBG(r, g, b)
+
+	return gp.addColorSpace(&colorSpace)
+}
+
+func (gp *GoPdf) AddColorSpaceCMYK(name string, c, m, y, k uint8) error {
+	colorSpace := ColorSpaceObj{}
+	colorSpace.Name = name
+
+	colorSpace.SetColorCMYK(c, m, y, k)
+
+	return gp.addColorSpace(&colorSpace)
+}
+
+func (gp *GoPdf) addColorSpace(colorSpace *ColorSpaceObj) error {
+	index := gp.addObj(colorSpace)
+
+	if gp.indexOfProcSet != -1 {
+		procset := gp.pdfObjs[gp.indexOfProcSet].(*ProcSetObj)
+
+		for _, relate := range procset.RelateColorSpaces {
+			if relate.Name == colorSpace.Name {
+				return ErrExistsColorSpace
+			}
+		}
+
+		procset.RelateColorSpaces = append(procset.RelateColorSpaces, RelateColorSpace{Name: colorSpace.Name, IndexOfObj: index, CountOfColorSpace: gp.curr.CountOfColorSpace})
+		colorSpace.CountOfSpaceColor = gp.curr.CountOfColorSpace
+		gp.curr.CountOfColorSpace++
+	}
+
+	return nil
 }
 
 //tool for validate pdf https://www.pdf-online.com/osa/validate.aspx
